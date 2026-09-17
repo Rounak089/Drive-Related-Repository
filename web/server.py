@@ -73,8 +73,16 @@ class ClinicApiHandler(BaseHTTPRequestHandler):
         elif path == "/app.js":
             return self._serve_static("app.js", "application/javascript")
 
+        # Clock & Outbox Endpoints (Twists 2 & 3)
+        if path in ("/clock", "/api/clock"):
+            return self._send_json({"current_time": self.service.get_clock_time().isoformat()})
+
+        elif path in ("/outbox", "/api/outbox"):
+            outbox = self.service.get_outbox()
+            return self._send_json(outbox)
+
         # API Endpoints
-        if path == "/api/doctors":
+        elif path == "/api/doctors":
             doctors = [d.to_dict() for d in self.service.repo.list_doctors()]
             return self._send_json({"doctors": doctors})
 
@@ -142,7 +150,31 @@ class ClinicApiHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        if path == "/api/doctors":
+        # Clock Advancement (Twists 2 & 3)
+        if path in ("/clock", "/api/clock"):
+            try:
+                body = self._parse_body()
+                time_val = (
+                    body.get("current_time")
+                    or body.get("time")
+                    or body.get("timestamp")
+                    or body.get("datetime")
+                )
+                if not time_val and isinstance(body, str):
+                    time_val = body
+                if not time_val:
+                    return self._send_error("current_time / time is required in request body", 400)
+
+                dt = self.service.advance_clock(time_val)
+                return self._send_json({
+                    "status": "ok",
+                    "current_time": dt.isoformat(),
+                    "message": f"Clock advanced to {dt.isoformat()}",
+                })
+            except Exception as ex:
+                return self._send_error(f"Clock update error: {ex}", 400)
+
+        elif path == "/api/doctors":
             # Onboard new doctor
             try:
                 body = self._parse_body()
@@ -215,6 +247,56 @@ class ClinicApiHandler(BaseHTTPRequestHandler):
             except Exception as ex:
                 return self._send_error(f"Internal error: {ex}", 500)
 
+        elif (path.startswith("/api/appointments/") or path.startswith("/appointments/")) and path.endswith("/reschedule"):
+            # Reschedule appointment (Twist 1 / T6)
+            clean_path = path.replace("/api/appointments/", "").replace("/appointments/", "")
+            appt_id = clean_path.replace("/reschedule", "")
+            try:
+                body = self._parse_body()
+                new_start_time = body.get("new_start_time") or body.get("start_time")
+                new_end_time = body.get("new_end_time") or body.get("end_time")
+                duration_minutes = body.get("duration_minutes")
+
+                if not new_start_time:
+                    return self._send_error("new_start_time (or start_time) is required", 400)
+
+                updated_appt = self.service.reschedule_appointment(
+                    appointment_id=appt_id,
+                    new_start_time=new_start_time,
+                    new_end_time=new_end_time,
+                    duration_minutes=int(duration_minutes) if duration_minutes else None,
+                )
+                return self._send_json({"success": True, "appointment": updated_appt.to_dict()})
+            except ConflictError as ce:
+                return self._send_error(
+                    str(ce),
+                    status=409,
+                    extra={
+                        "conflicting_appointment": ce.conflicting_appointment.to_dict() if ce.conflicting_appointment else None,
+                        "suggested_slots": ce.suggested_slots,
+                    }
+                )
+            except NotFoundError as ne:
+                return self._send_error(str(ne), 404)
+            except ValidationError as ve:
+                return self._send_error(str(ve), 400)
+            except Exception as ex:
+                return self._send_error(f"Internal error: {ex}", 500)
+
+        elif (path.startswith("/api/appointments/") or path.startswith("/appointments/")) and path.endswith("/complete"):
+            # Complete appointment
+            clean_path = path.replace("/api/appointments/", "").replace("/appointments/", "")
+            appt_id = clean_path.replace("/complete", "")
+            try:
+                completed_appt = self.service.complete_appointment(appt_id)
+                return self._send_json({"success": True, "appointment": completed_appt.to_dict()})
+            except NotFoundError as ne:
+                return self._send_error(str(ne), 404)
+            except ValidationError as ve:
+                return self._send_error(str(ve), 400)
+            except Exception as ex:
+                return self._send_error(f"Internal error: {ex}", 500)
+
         elif path.startswith("/api/appointments/") and path.endswith("/cancel"):
             # Cancel appointment
             appt_id = path.replace("/api/appointments/", "").replace("/cancel", "")
@@ -237,6 +319,16 @@ class ClinicApiHandler(BaseHTTPRequestHandler):
                 return self._send_error(str(ve), 400)
             except Exception as ex:
                 return self._send_error(f"Internal error: {ex}", 500)
+
+        self._send_error(f"Endpoint '{path}' not found", 404)
+
+    def do_DELETE(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        if path in ("/outbox", "/api/outbox"):
+            self.service.clear_outbox()
+            return self._send_json({"status": "ok", "message": "Outbox cleared"})
 
         self._send_error(f"Endpoint '{path}' not found", 404)
 

@@ -76,6 +76,20 @@ class Doctor:
         """Check if doctor works on the given weekday."""
         return dt.weekday() in self.working_days
 
+    def works_on(self, weekday: int) -> bool:
+        """Check if doctor works on the given weekday index (0=Mon, 6=Sun)."""
+        return weekday in self.working_days
+
+    @property
+    def work_start_tuple(self) -> tuple[int, int]:
+        s_h, s_m = map(int, self.work_start_time.split(":"))
+        return s_h, s_m
+
+    @property
+    def work_end_tuple(self) -> tuple[int, int]:
+        e_h, e_m = map(int, self.work_end_time.split(":"))
+        return e_h, e_m
+
     def get_shift_times(self, target_date: datetime) -> tuple[datetime, datetime]:
         """Returns the start and end datetimes of the doctor's shift on target_date."""
         s_h, s_m = map(int, self.work_start_time.split(":"))

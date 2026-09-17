@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from .clock import SystemClock, parse_datetime
 from .models import (
     Appointment,
     AppointmentStatus,
@@ -16,6 +17,7 @@ from .models import (
     Patient,
     TimeSlot,
 )
+from .notifications import Notification
 from .policy import CancellationPolicy
 from .repository import ClinicRepository
 
@@ -48,9 +50,13 @@ class ClinicService:
         self,
         repository: ClinicRepository,
         policy: Optional[CancellationPolicy] = None,
+        clock: Optional[SystemClock] = None,
     ):
         self.repo = repository
         self.policy = policy or CancellationPolicy(cutoff_hours=24.0, late_fee=25.0)
+        self.clock = clock or SystemClock()
+        # Bind clock listener to auto-execute automated jobs
+        self.clock.register_listener(self._on_clock_tick)
 
     # ------------------ Doctor Management ------------------
 
@@ -481,3 +487,186 @@ class ClinicService:
         )
         self.repo.save_patient(patient)
         return patient
+
+    # ------------------ Rescheduling (Twist 1 / T6) ------------------
+
+    def reschedule_appointment(
+        self,
+        appointment_id: str,
+        new_start_time: Union[str, datetime],
+        new_end_time: Optional[Union[str, datetime]] = None,
+        duration_minutes: Optional[int] = None,
+    ) -> Appointment:
+        """
+        Reschedules an appointment to a new time while ensuring conflict-free booking,
+        re-checking overlap for doctor and patient (excluding self), and keeping the same doctor and patient.
+        """
+        appt = self.repo.get_appointment(appointment_id)
+        if not appt:
+            raise NotFoundError(f"Appointment with ID '{appointment_id}' not found.")
+
+        if appt.status.is_cancelled:
+            raise ValidationError(f"Cannot reschedule a cancelled appointment (status: {appt.status.value}).")
+
+        # Parse times
+        dt_start = parse_datetime(new_start_time)
+        if new_end_time is not None:
+            dt_end = parse_datetime(new_end_time)
+        elif duration_minutes is not None and duration_minutes > 0:
+            dt_end = dt_start + timedelta(minutes=duration_minutes)
+        else:
+            # Preserve original appointment duration
+            orig_duration = appt.end_time - appt.start_time
+            dt_end = dt_start + orig_duration
+
+        if dt_start >= dt_end:
+            raise ValidationError(f"Start time ({dt_start}) must be strictly earlier than end time ({dt_end}).")
+
+        # Validate doctor's working schedule
+        doctor = self.repo.get_doctor(appt.doctor_id)
+        if not doctor:
+            raise NotFoundError(f"Doctor '{appt.doctor_id}' not found.")
+
+        weekday = dt_start.weekday()
+        if not doctor.works_on(weekday):
+            day_name = dt_start.strftime("%A")
+            raise ValidationError(f"Dr. {doctor.name} does not work on {day_name}s.")
+
+        s_h, s_m = doctor.work_start_tuple
+        e_h, e_m = doctor.work_end_tuple
+        shift_start = dt_start.replace(hour=s_h, minute=s_m, second=0, microsecond=0)
+        shift_end = dt_start.replace(hour=e_h, minute=e_m, second=0, microsecond=0)
+
+        if dt_start < shift_start or dt_end > shift_end:
+            raise ValidationError(
+                f"Rescheduled appointment time ({dt_start.strftime('%H:%M')} - {dt_end.strftime('%H:%M')}) "
+                f"falls outside Dr. {doctor.name}'s working hours ({doctor.work_start_time} - {doctor.work_end_time})."
+            )
+
+        # Atomic conflict check & update
+        success, conflict_appt, reason = self.repo.reschedule_appointment_atomic(
+            appointment_id=appointment_id,
+            new_start_time=dt_start,
+            new_end_time=dt_end,
+        )
+
+        if not success:
+            if reason == "doctor_conflict":
+                suggestions = self.get_available_slots(
+                    doctor_id=doctor.id,
+                    target_date=dt_start,
+                    slot_duration_minutes=int((dt_end - dt_start).total_seconds() // 60) or 30,
+                )
+                raise ConflictError(
+                    f"Dr. {doctor.name} is already booked during this time interval.",
+                    conflicting_appointment=conflict_appt,
+                    suggested_slots=suggestions,
+                )
+            elif reason == "patient_conflict":
+                raise ConflictError(
+                    f"Patient already has another confirmed appointment during this time interval.",
+                    conflicting_appointment=conflict_appt,
+                )
+            else:
+                raise ConflictError("Could not reschedule appointment due to a scheduling conflict.")
+
+        updated_appt = self.repo.get_appointment(appointment_id)
+        return updated_appt
+
+    # ------------------ Appointment Lifecycle: Complete ------------------
+
+    def complete_appointment(self, appointment_id: str) -> Appointment:
+        """
+        Marks an appointment as COMPLETED so it won't be auto-marked as NO_SHOW.
+        """
+        appt = self.repo.get_appointment(appointment_id)
+        if not appt:
+            raise NotFoundError(f"Appointment with ID '{appointment_id}' not found.")
+        if appt.status.is_cancelled:
+            raise ValidationError(f"Cannot complete a cancelled appointment (status: {appt.status.value}).")
+
+        self.repo.complete_appointment_atomic(appointment_id)
+        return self.repo.get_appointment(appointment_id)
+
+    # ------------------ Simulated Clock & Automation (Twists 2 & 3) ------------------
+
+    def _on_clock_tick(self, current_time: datetime) -> None:
+        """Internal callback invoked whenever system clock advances."""
+        # Run morning reminders for current date
+        self.send_morning_reminders(current_time.date())
+        # Run auto-no-show for appointments older than 30 minutes from start
+        self.mark_no_shows(current_time)
+
+    def advance_clock(self, new_time: Union[str, int, float, datetime]) -> datetime:
+        """Advances or sets the system simulated clock and triggers automated jobs."""
+        dt = self.clock.set_time(new_time)
+        return dt
+
+    def get_clock_time(self) -> datetime:
+        return self.clock.get_time()
+
+    def send_morning_reminders(self, target_date: Optional[Union[date, datetime, str]] = None) -> List[Notification]:
+        """
+        Twist 2: Sends morning reminder notifications to patients with confirmed appointments today.
+        Logged into the Notification Outbox.
+        """
+        if target_date is None:
+            target_date = self.clock.get_time().date()
+        elif isinstance(target_date, str):
+            target_date = parse_datetime(target_date).date()
+        elif isinstance(target_date, datetime):
+            target_date = target_date.date()
+
+        date_str = target_date.strftime("%Y-%m-%d")
+        # Fetch all confirmed appointments for this date
+        start_of_day = datetime.combine(target_date, datetime.min.time())
+        end_of_day = datetime.combine(target_date, datetime.max.time())
+
+        appts = self.repo.get_active_appointments_in_range(start_of_day, end_of_day)
+        sent_notifications: List[Notification] = []
+
+        clock_now = self.clock.get_time()
+
+        for appt in appts:
+            if appt.status == AppointmentStatus.CONFIRMED:
+                if not self.repo.has_reminder_been_sent(appt.id, date_str):
+                    notif = Notification(
+                        id=f"notif_{uuid.uuid4().hex[:12]}",
+                        recipient_id=appt.patient_id,
+                        recipient_name=appt.patient_name,
+                        recipient_contact=appt.patient_phone,
+                        appointment_id=appt.id,
+                        doctor_id=appt.doctor_id,
+                        doctor_name=appt.doctor_name,
+                        appointment_time=appt.start_time,
+                        message=(
+                            f"Morning Reminder: Hello {appt.patient_name}, you have an appointment with "
+                            f"{appt.doctor_name} scheduled today at {appt.start_time.strftime('%H:%M')}."
+                        ),
+                        notification_type="REMINDER",
+                        created_at=clock_now,
+                    )
+                    self.repo.save_notification(notif)
+                    sent_notifications.append(notif)
+
+        return sent_notifications
+
+    def mark_no_shows(self, current_time: Optional[datetime] = None) -> List[Appointment]:
+        """
+        Twist 3: Auto-marks appointments as NO_SHOW 30 min after their start_time if not completed.
+        """
+        if current_time is None:
+            current_time = self.clock.get_time()
+
+        cutoff_time = current_time - timedelta(minutes=30)
+        no_shows = self.repo.mark_no_shows_atomic(cutoff_time)
+        return no_shows
+
+    def get_outbox(self) -> List[Dict[str, Any]]:
+        """Returns all dispatched notifications in the outbox."""
+        return self.repo.get_outbox()
+
+    def clear_outbox(self) -> None:
+        """Clears all notifications from outbox."""
+        self.repo.clear_outbox()
+

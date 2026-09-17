@@ -230,6 +230,91 @@ def cmd_cancel(
         print(f"\n\033[91m[ERROR] {e}\033[0m\n")
 
 
+def cmd_reschedule(
+    service: ClinicService,
+    appointment_id: str,
+    start_time_str: str,
+    duration: Optional[int] = None,
+) -> None:
+    try:
+        new_start = datetime.strptime(start_time_str, "%Y-%m-%d %H:%M")
+    except ValueError:
+        try:
+            new_start = datetime.fromisoformat(start_time_str)
+        except ValueError:
+            print("[Error] Invalid start time format. Use 'YYYY-MM-DD HH:MM'.")
+            return
+
+    try:
+        updated = service.reschedule_appointment(
+            appointment_id=appointment_id,
+            new_start_time=new_start,
+            duration_minutes=duration,
+        )
+        print("\n\033[92m[SUCCESS] Appointment Rescheduled Successfully!\033[0m")
+        print(f"  Appointment ID: {updated.id}")
+        print(f"  Patient:        {updated.patient_name}")
+        print(f"  Doctor:         {updated.doctor_name}")
+        print(f"  New Time:       {updated.start_time.strftime('%Y-%m-%d %H:%M')} - {updated.end_time.strftime('%H:%M')}")
+        print(f"  Status:         {updated.status.value}\n")
+    except ConflictError as ce:
+        print(f"\n\033[91m[CONFLICT] {ce}\033[0m")
+        if ce.suggested_slots:
+            print("\n  Suggested Available Slots:")
+            for s in ce.suggested_slots[:5]:
+                print(f"   -> {s['formatted']} ({s['start_time']})")
+        print()
+    except (NotFoundError, ValidationError) as e:
+        print(f"\n\033[91m[ERROR] {e}\033[0m\n")
+
+
+def cmd_complete(service: ClinicService, appointment_id: str) -> None:
+    try:
+        completed = service.complete_appointment(appointment_id)
+        print(f"\n\033[92m[SUCCESS] Appointment {completed.id} marked as COMPLETED.\033[0m\n")
+    except (NotFoundError, ValidationError) as e:
+        print(f"\n\033[91m[ERROR] {e}\033[0m\n")
+
+
+def cmd_clock(service: ClinicService, new_time_str: Optional[str] = None) -> None:
+    if not new_time_str:
+        curr = service.get_clock_time()
+        print(f"\n[Clock] Current Simulated Time: {curr.isoformat()} ({curr.strftime('%Y-%m-%d %H:%M:%S')})\n")
+        return
+
+    try:
+        dt = service.advance_clock(new_time_str)
+        print(f"\n\033[92m[Clock] Advanced to: {dt.isoformat()}\033[0m")
+        print("  - Morning reminders checked & dispatched to Outbox")
+        print("  - 30-minute overdue appointments auto-marked as NO_SHOW\n")
+    except Exception as e:
+        print(f"\n\033[91m[ERROR] Could not advance clock: {e}\033[0m\n")
+
+
+def cmd_outbox(service: ClinicService, clear: bool = False) -> None:
+    if clear:
+        service.clear_outbox()
+        print("\n\033[92m[Outbox] Notification outbox cleared.\033[0m\n")
+        return
+
+    outbox = service.get_outbox()
+    print("\n" + "=" * 80)
+    print(" NOTIFICATION SERVICE OUTBOX")
+    print("=" * 80)
+    if not outbox:
+        print(" Outbox is empty (no notifications queued/dispatched).")
+    else:
+        print(f"{'Time':<20} {'Recipient':<18} {'Type':<12} {'Message'}")
+        print("-" * 80)
+        for n in outbox:
+            created = n.get("created_at", "")[:19]
+            recip = n.get("recipient_name", "")
+            ntype = n.get("notification_type", "")
+            msg = n.get("message", "")
+            print(f"{created:<20} {recip:<18} {ntype:<12} {msg}")
+    print("=" * 80 + "\n")
+
+
 # ============================== Interactive Mode ==============================
 
 def interactive_mode(service: ClinicService) -> None:
@@ -239,15 +324,19 @@ def interactive_mode(service: ClinicService) -> None:
         print("=" * 55)
         print(" 1. View Doctor's Day Schedule (Timeline & Free Slots)")
         print(" 2. Book New Appointment (Conflict-Free)")
-        print(" 3. Search Patient by Name (Look up Appointments)")
-        print(" 4. Cancel Appointment (Evaluate Notice & Late Fee)")
-        print(" 5. List All Doctors")
-        print(" 6. View Cancellation Fee Ledger")
-        print(" 7. Onboard New Doctor to Clinic")
+        print(" 3. Reschedule Appointment (Re-check Overlap)")
+        print(" 4. Mark Appointment as Completed")
+        print(" 5. Search Patient by Name (Look up Appointments)")
+        print(" 6. Cancel Appointment (Evaluate Notice & Late Fee)")
+        print(" 7. List All Doctors")
+        print(" 8. View Cancellation Fee Ledger")
+        print(" 9. Onboard New Doctor to Clinic")
+        print("10. Advance System Simulated Clock (Triggers Reminders & No-Shows)")
+        print("11. View Notification Outbox")
         print(" 0. Exit")
         print("=" * 55)
 
-        choice = input("Select an option [0-7]: ").strip()
+        choice = input("Select an option [0-11]: ").strip()
         if choice == "0":
             print("Exiting front desk system. Goodbye!")
             break
@@ -268,9 +357,18 @@ def interactive_mode(service: ClinicService) -> None:
             notes = input("Appointment Notes / Reason: ").strip()
             cmd_book(service, doc_id, pat_name, start_in, duration, pat_phone, notes)
         elif choice == "3":
+            appt_id = input("Enter Appointment ID to reschedule: ").strip()
+            start_in = input("New Start Date & Time YYYY-MM-DD HH:MM: ").strip()
+            dur_in = input("Duration in minutes (Press Enter to keep existing): ").strip()
+            duration = int(dur_in) if dur_in.isdigit() else None
+            cmd_reschedule(service, appt_id, start_in, duration)
+        elif choice == "4":
+            appt_id = input("Enter Appointment ID to mark completed: ").strip()
+            cmd_complete(service, appt_id)
+        elif choice == "5":
             query = input("Enter patient name or partial name to search: ").strip()
             cmd_search(service, query)
-        elif choice == "4":
+        elif choice == "6":
             appt_id = input("Enter Appointment ID to cancel: ").strip()
             reason = input("Reason for cancellation: ").strip()
             waive_in = input("Waive late cancellation fee for emergency? (y/N): ").strip().lower()
@@ -279,9 +377,9 @@ def interactive_mode(service: ClinicService) -> None:
             if waive:
                 waiver_reason = input("Enter fee waiver justification: ").strip()
             cmd_cancel(service, appt_id, waive_fee=waive, reason=reason, waiver_reason=waiver_reason)
-        elif choice == "5":
+        elif choice == "7":
             cmd_doctors(service)
-        elif choice == "6":
+        elif choice == "8":
             records = service.repo.list_cancellation_records()
             print("\n" + "=" * 85)
             print(" CANCELLATION & FEE AUDIT LEDGER")
@@ -295,7 +393,7 @@ def interactive_mode(service: ClinicService) -> None:
                     waived_str = f"YES ({r['waiver_reason']})" if r["waived"] else "NO"
                     print(f"{r['appointment_id']:<16} {r['patient_name']:<18} {r['doctor_name']:<18} {round(r['notice_hours'],1)}h       ${r['fee']:<9.2f} {waived_str}")
             print("=" * 85 + "\n")
-        elif choice == "7":
+        elif choice == "9":
             print("\n--- Onboard New Doctor ---")
             name = input("Doctor Full Name (e.g. Dr. Gregory House): ").strip()
             spec = input("Department / Specialty (e.g. Neurology, Cardiology): ").strip()
@@ -305,6 +403,11 @@ def interactive_mode(service: ClinicService) -> None:
             days_in = input("Working days 0-6 (0=Mon, 4=Fri) comma-separated [default 0,1,2,3,4]: ").strip()
             days = [int(d.strip()) for d in days_in.split(",") if d.strip().isdigit()] if days_in else [0, 1, 2, 3, 4]
             cmd_add_doctor(service, name, spec, room, s_time, e_time, days)
+        elif choice == "10":
+            time_in = input("Enter new simulated time (YYYY-MM-DD HH:MM or ISO string): ").strip()
+            cmd_clock(service, time_in or None)
+        elif choice == "11":
+            cmd_outbox(service)
         else:
             print("Invalid selection. Please choose an option from the menu.")
 
@@ -335,6 +438,16 @@ def main():
     p_book.add_argument("--phone", default="", help="Patient phone number")
     p_book.add_argument("--notes", default="", help="Appointment notes")
 
+    # Reschedule command (Twist 1 / T6)
+    p_resched = subparsers.add_parser("reschedule", help="Reschedule an appointment to a new time")
+    p_resched.add_argument("appointment_id", help="Appointment ID to reschedule")
+    p_resched.add_argument("--start", required=True, help="New start time 'YYYY-MM-DD HH:MM'")
+    p_resched.add_argument("--duration", type=int, help="Duration in minutes (optional, keeps original if omitted)")
+
+    # Complete command
+    p_comp = subparsers.add_parser("complete", help="Mark an appointment as completed")
+    p_comp.add_argument("appointment_id", help="Appointment ID")
+
     # Cancel command
     p_cancel = subparsers.add_parser("cancel", help="Cancel an appointment")
     p_cancel.add_argument("appointment_id", help="Appointment ID")
@@ -350,6 +463,14 @@ def main():
     p_add_doc.add_argument("--start", default="08:30", help="Shift start time HH:MM (default: 08:30)")
     p_add_doc.add_argument("--end", default="17:00", help="Shift end time HH:MM (default: 17:00)")
     p_add_doc.add_argument("--days", type=int, nargs="+", default=[0, 1, 2, 3, 4], help="Working days (0=Mon, 6=Sun)")
+
+    # Clock command (Twist 2 & 3)
+    p_clock = subparsers.add_parser("clock", help="Simulate / advance clock time")
+    p_clock.add_argument("--set", dest="new_time", help="Set clock time to 'YYYY-MM-DD HH:MM' or ISO string")
+
+    # Outbox command
+    p_outbox = subparsers.add_parser("outbox", help="View or clear notification outbox")
+    p_outbox.add_argument("--clear", action="store_true", help="Clear outbox")
 
     # Interactive command
     subparsers.add_parser("interactive", help="Start interactive front desk terminal menu")
@@ -367,8 +488,16 @@ def main():
         cmd_search(service, args.name)
     elif args.command == "book":
         cmd_book(service, args.doctor, args.patient, args.start, args.duration, args.phone, args.notes)
+    elif args.command == "reschedule":
+        cmd_reschedule(service, args.appointment_id, args.start, args.duration)
+    elif args.command == "complete":
+        cmd_complete(service, args.appointment_id)
     elif args.command == "cancel":
         cmd_cancel(service, args.appointment_id, args.waive, args.reason, args.waiver_reason)
+    elif args.command == "clock":
+        cmd_clock(service, args.new_time)
+    elif args.command == "outbox":
+        cmd_outbox(service, args.clear)
     else:
         # Default to interactive menu if no command provided
         interactive_mode(service)

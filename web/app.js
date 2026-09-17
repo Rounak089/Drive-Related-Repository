@@ -9,6 +9,7 @@ const state = {
   selectedDoctorId: null,
   selectedDate: new Date().toISOString().split('T')[0],
   activeScheduleData: null,
+  currentSimulatedTime: null,
 };
 
 // DOM Elements
@@ -43,6 +44,21 @@ const elements = {
   conflictTitle: document.getElementById('conflictTitle'),
   conflictMessage: document.getElementById('conflictMessage'),
   conflictSuggestions: document.getElementById('conflictSuggestions'),
+
+  // Reschedule Modal (Twist 1 / T6)
+  rescheduleModal: document.getElementById('rescheduleModal'),
+  btnCloseRescheduleModal: document.getElementById('btnCloseRescheduleModal'),
+  btnCancelRescheduleModal: document.getElementById('btnCancelRescheduleModal'),
+  rescheduleForm: document.getElementById('rescheduleForm'),
+  rescheduleApptId: document.getElementById('rescheduleApptId'),
+  rescheduleApptSummary: document.getElementById('rescheduleApptSummary'),
+  rescheduleConflictAlert: document.getElementById('rescheduleConflictAlert'),
+  rescheduleConflictTitle: document.getElementById('rescheduleConflictTitle'),
+  rescheduleConflictMessage: document.getElementById('rescheduleConflictMessage'),
+  rescheduleConflictSuggestions: document.getElementById('rescheduleConflictSuggestions'),
+  rescheduleDate: document.getElementById('rescheduleDate'),
+  rescheduleTime: document.getElementById('rescheduleTime'),
+  rescheduleDuration: document.getElementById('rescheduleDuration'),
 
   // Add Doctor Modal
   btnOpenAddDoctorModal: document.getElementById('btnOpenAddDoctorModal'),
@@ -80,6 +96,16 @@ const elements = {
   ledgerTableBody: document.getElementById('ledgerTableBody'),
   btnRefreshLedger: document.getElementById('btnRefreshLedger'),
 
+  // Clock & Outbox Tab (Twists 2 & 3)
+  currentClockDisplay: document.getElementById('currentClockDisplay'),
+  advanceClockInput: document.getElementById('advanceClockInput'),
+  btnAdvanceClock: document.getElementById('btnAdvanceClock'),
+  btnAdvance30Min: document.getElementById('btnAdvance30Min'),
+  btnAdvanceTomorrowMorning: document.getElementById('btnAdvanceTomorrowMorning'),
+  btnRefreshOutbox: document.getElementById('btnRefreshOutbox'),
+  btnClearOutbox: document.getElementById('btnClearOutbox'),
+  outboxTableBody: document.getElementById('outboxTableBody'),
+
   // Toast
   toastContainer: document.getElementById('toastContainer'),
 };
@@ -92,6 +118,7 @@ async function init() {
   setupModals();
   setupSearch();
   setupLedger();
+  setupClockAndOutbox();
 
   // Set default date input
   elements.scheduleDate.value = state.selectedDate;
@@ -104,6 +131,9 @@ async function init() {
   if (state.selectedDoctorId) {
     await loadSchedule();
   }
+
+  // Load initial clock
+  await loadClock();
 }
 
 // ============================== Tab Navigation ==============================
@@ -118,12 +148,16 @@ function setupNavigation() {
       elements.tabPanes.forEach(p => p.classList.remove('active'));
 
       tab.classList.add('active');
-      document.getElementById(`tab-${targetTab}`).classList.add('active');
+      const pane = document.getElementById(`tab-${targetTab}`);
+      if (pane) pane.classList.add('active');
 
       if (targetTab === 'schedule') {
         loadSchedule();
       } else if (targetTab === 'ledger') {
         loadLedger();
+      } else if (targetTab === 'clock') {
+        loadClock();
+        loadOutbox();
       }
     });
   });
@@ -180,63 +214,76 @@ function setupDateControls() {
   });
 
   elements.btnToday.addEventListener('click', () => {
-    const today = new Date().toISOString().split('T')[0];
-    state.selectedDate = today;
-    elements.scheduleDate.value = today;
+    state.selectedDate = new Date().toISOString().split('T')[0];
+    elements.scheduleDate.value = state.selectedDate;
     loadSchedule();
   });
 }
 
-function changeDay(offsetDays) {
-  const current = new Date(state.selectedDate + 'T00:00:00');
-  current.setDate(current.getDate() + offsetDays);
-  const nextDate = current.toISOString().split('T')[0];
-  state.selectedDate = nextDate;
-  elements.scheduleDate.value = nextDate;
+function changeDay(deltaDays) {
+  const [y, m, d] = state.selectedDate.split('-').map(Number);
+  const cur = new Date(y, m - 1, d);
+  cur.setDate(cur.getDate() + deltaDays);
+  state.selectedDate = cur.toISOString().split('T')[0];
+  elements.scheduleDate.value = state.selectedDate;
   loadSchedule();
 }
 
 async function loadSchedule() {
-  if (!state.selectedDoctorId || !state.selectedDate) return;
+  if (!state.selectedDoctorId) return;
 
-  elements.timelineContainer.innerHTML = '<div class="loading-spinner">Loading doctor schedule...</div>';
+  elements.timelineContainer.innerHTML = '<div class="loading-spinner">Loading schedule...</div>';
+  elements.cancelledSection.style.display = 'none';
 
   try {
     const res = await fetch(`/api/schedule?doctor_id=${state.selectedDoctorId}&date=${state.selectedDate}`);
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Failed to load schedule');
+      const errData = await res.json();
+      throw new Error(errData.error || 'Failed to fetch schedule');
     }
     const data = await res.json();
     state.activeScheduleData = data;
     renderSchedule(data);
   } catch (err) {
-    elements.timelineContainer.innerHTML = `<div class="alert alert-danger">Error: ${err.message}</div>`;
+    elements.timelineContainer.innerHTML = `<div class="empty-state"><p style="color: var(--danger)">${err.message}</p></div>`;
   }
 }
 
 function renderSchedule(data) {
   const doc = data.doctor;
-  elements.activeApptCount.textContent = `${data.active_appointment_count} active appointment${data.active_appointment_count === 1 ? '' : 's'}`;
+  const isWorking = data.is_working_day;
 
-  // Doctor metrics card
+  // Header metrics
+  elements.activeApptCount.textContent = `${data.active_appointment_count} booked`;
+
   elements.doctorMetrics.innerHTML = `
-    <div class="metric-doctor-info">
-      <h3>${doc.name}</h3>
-      <p>${doc.specialty} &bull; ${doc.room}</p>
-      <p style="margin-top: 4px;">Working Shift: <strong>${doc.work_start_time} - ${doc.work_end_time}</strong> ${data.is_working_day ? '' : '<span class="badge badge-warning">Off Day</span>'}</p>
+    <div class="doctor-profile-row">
+      <div class="doctor-avatar">${doc.name.replace('Dr. ', '').charAt(0)}</div>
+      <div class="doctor-info">
+        <h3>${escapeHtml(doc.name)}</h3>
+        <p>${escapeHtml(doc.specialty)} &bull; ${escapeHtml(doc.room)}</p>
+      </div>
+      <div class="doctor-badge-status">
+        ${isWorking ? '<span class="badge badge-success">On Duty</span>' : '<span class="badge badge-warning">Off Duty (Closed)</span>'}
+      </div>
     </div>
-    <div class="metric-stat">
-      <span class="label">Booked Time</span>
-      <span class="value">${data.booked_minutes} min</span>
-    </div>
-    <div class="metric-stat">
-      <span class="label">Open Free Time</span>
-      <span class="value" style="color: var(--primary);">${data.free_minutes} min</span>
-    </div>
-    <div class="metric-stat">
-      <span class="label">Utilization</span>
-      <span class="value">${data.utilization_percent}%</span>
+    <div class="metrics-grid">
+      <div class="metric-item">
+        <span class="label">Operating Hours</span>
+        <span class="value">${doc.work_start_time} - ${doc.work_end_time}</span>
+      </div>
+      <div class="metric-item">
+        <span class="label">Booked Time</span>
+        <span class="value">${data.booked_minutes} mins</span>
+      </div>
+      <div class="metric-item">
+        <span class="label">Free Available</span>
+        <span class="value">${data.free_minutes} mins</span>
+      </div>
+      <div class="metric-item">
+        <span class="label">Doctor Utilization</span>
+        <span class="value">${data.utilization_percent}%</span>
+      </div>
     </div>
   `;
 
@@ -257,6 +304,10 @@ function renderSchedule(data) {
 
     if (block.type === 'BOOKED') {
       const appt = block.appointment;
+      const statusBadge = appt.status === 'COMPLETED'
+        ? '<span class="badge badge-info">Completed</span>'
+        : (appt.status === 'NO_SHOW' ? '<span class="badge badge-danger">No Show</span>' : '<span class="badge badge-success">Confirmed</span>');
+
       blockDiv.innerHTML = `
         <div class="block-time">
           <span>${sTime} - ${eTime}</span>
@@ -265,7 +316,7 @@ function renderSchedule(data) {
         <div class="block-content">
           <div class="block-patient-name">
             <span>${escapeHtml(appt.patient_name)}</span>
-            <span class="badge badge-success">Confirmed</span>
+            ${statusBadge}
           </div>
           <div class="block-notes">
             ${appt.patient_phone ? `<span>Phone: ${escapeHtml(appt.patient_phone)}</span> &bull; ` : ''}
@@ -273,13 +324,25 @@ function renderSchedule(data) {
           </div>
         </div>
         <div class="block-actions">
-          <button class="btn btn-secondary btn-sm btn-cancel-appt" data-id="${appt.id}">Cancel</button>
+          ${appt.status === 'CONFIRMED' ? `
+            <button class="btn btn-secondary btn-sm btn-resched-appt" data-id="${appt.id}">Reschedule</button>
+            <button class="btn btn-secondary btn-sm btn-comp-appt" data-id="${appt.id}" style="color: var(--success); font-weight: 600;">Complete</button>
+            <button class="btn btn-secondary btn-sm btn-cancel-appt" data-id="${appt.id}">Cancel</button>
+          ` : ''}
         </div>
       `;
 
-      blockDiv.querySelector('.btn-cancel-appt').addEventListener('click', () => {
-        openCancelModal(appt.id);
-      });
+      if (appt.status === 'CONFIRMED') {
+        blockDiv.querySelector('.btn-resched-appt').addEventListener('click', () => {
+          openRescheduleModal(appt);
+        });
+        blockDiv.querySelector('.btn-comp-appt').addEventListener('click', () => {
+          completeAppointment(appt.id);
+        });
+        blockDiv.querySelector('.btn-cancel-appt').addEventListener('click', () => {
+          openCancelModal(appt.id);
+        });
+      }
     } else {
       // FREE slot
       blockDiv.innerHTML = `
@@ -319,162 +382,102 @@ function renderSchedule(data) {
       const item = document.createElement('div');
       item.className = 'cancelled-card';
       item.innerHTML = `
-        <div>
-          <strong>${cTime} &bull; ${escapeHtml(ca.patient_name)}</strong>
-          <span class="badge badge-danger" style="margin-left: 8px;">${ca.status}</span>
-          <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 2px;">
-            Reason: ${escapeHtml(ca.cancellation?.reason || 'No reason provided')}
-          </p>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <strong>${escapeHtml(ca.patient_name)} (${cTime})</strong>
+          <span class="badge ${ca.status === 'CANCELLED_LATE' ? 'badge-danger' : 'badge-warning'}">${ca.status}</span>
         </div>
-        <div style="font-weight: 600; color: ${ca.cancellation?.fee > 0 ? 'var(--danger)' : 'var(--text-muted)'};">
-          ${feeText}
+        <div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 4px;">
+          ${feeText ? `<span>${feeText}</span> &bull; ` : ''}
+          <span>Reason: ${escapeHtml(ca.cancellation?.reason || 'No reason provided')}</span>
         </div>
       `;
       elements.cancelledList.appendChild(item);
     });
-  } else {
-    elements.cancelledSection.style.display = 'none';
   }
 }
 
-// ============================== Booking Modal ==============================
+// ============================== Modal Setup ==============================
 
 function setupModals() {
+  // Booking modal
   elements.btnOpenBookModal.addEventListener('click', () => {
     openBookModalWithPreset(state.selectedDoctorId, null, 30);
   });
-
   elements.btnCloseBookModal.addEventListener('click', closeBookModal);
   elements.btnCancelBookModal.addEventListener('click', closeBookModal);
-
   elements.bookForm.addEventListener('submit', handleBookSubmit);
 
-  // Cancellation modal buttons
+  // Add Doctor modal
+  elements.btnOpenAddDoctorModal.addEventListener('click', openAddDoctorModal);
+  elements.btnCloseAddDoctorModal.addEventListener('click', closeAddDoctorModal);
+  elements.btnCancelAddDoctorModal.addEventListener('click', closeAddDoctorModal);
+  elements.addDoctorForm.addEventListener('submit', handleAddDoctorSubmit);
+
+  // Cancellation modal
   elements.btnCloseCancelModal.addEventListener('click', closeCancelModal);
   elements.btnDismissCancelModal.addEventListener('click', closeCancelModal);
   elements.cancelForm.addEventListener('submit', handleCancelSubmit);
 
+  // Reschedule modal (Twist 1 / T6)
+  elements.btnCloseRescheduleModal.addEventListener('click', closeRescheduleModal);
+  elements.btnCancelRescheduleModal.addEventListener('click', closeRescheduleModal);
+  elements.rescheduleForm.addEventListener('submit', handleRescheduleSubmit);
+
+  // Waiver toggle
   elements.cancelWaiveFee.addEventListener('change', (e) => {
     elements.waiverReasonGroup.style.display = e.target.checked ? 'block' : 'none';
     elements.cancelWaiverReason.required = e.target.checked;
   });
-
-  // Add Doctor modal buttons
-  if (elements.btnOpenAddDoctorModal) {
-    elements.btnOpenAddDoctorModal.addEventListener('click', openAddDoctorModal);
-  }
-  if (elements.btnCloseAddDoctorModal) {
-    elements.btnCloseAddDoctorModal.addEventListener('click', closeAddDoctorModal);
-  }
-  if (elements.btnCancelAddDoctorModal) {
-    elements.btnCancelAddDoctorModal.addEventListener('click', closeAddDoctorModal);
-  }
-  if (elements.addDoctorForm) {
-    elements.addDoctorForm.addEventListener('submit', handleAddDoctorSubmit);
-  }
 }
 
-function openAddDoctorModal() {
-  elements.addDoctorForm.reset();
-  elements.newDocStart.value = '08:30';
-  elements.newDocEnd.value = '17:00';
-  // Default Mon-Fri checked
-  document.querySelectorAll('input[name="workDay"]').forEach((cb, idx) => {
-    cb.checked = idx < 5;
-  });
-  elements.addDoctorModal.style.display = 'flex';
-}
-
-function closeAddDoctorModal() {
-  elements.addDoctorModal.style.display = 'none';
-}
-
-async function handleAddDoctorSubmit(e) {
-  e.preventDefault();
-
-  const name = elements.newDocName.value.trim();
-  const specialty = elements.newDocSpecialty.value.trim();
-  const room = elements.newDocRoom.value.trim();
-  const start_time = elements.newDocStart.value.trim();
-  const end_time = elements.newDocEnd.value.trim();
-
-  const days = Array.from(document.querySelectorAll('input[name="workDay"]:checked'))
-    .map(cb => parseInt(cb.value, 10));
-
-  try {
-    const res = await fetch('/api/doctors', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name,
-        specialty,
-        room,
-        work_start_time: start_time,
-        work_end_time: end_time,
-        working_days: days,
-      }),
-    });
-
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Failed to onboard doctor');
-    }
-
-    closeAddDoctorModal();
-    showToast(`Dr. ${data.doctor.name.replace(/^Dr\.\s*/, '')} onboarded successfully!`, 'success');
-
-    // Reload doctors and select the new doctor immediately
-    await loadDoctors();
-    state.selectedDoctorId = data.doctor.id;
-    elements.doctorSelect.value = data.doctor.id;
-    await loadSchedule();
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-}
+// ============================== Booking Modal ==============================
 
 function openBookModalWithPreset(doctorId, startIso, duration) {
   elements.bookingConflictAlert.style.display = 'none';
-  elements.bookForm.reset();
-
-  if (doctorId) {
-    elements.bookDoctor.value = doctorId;
-  }
+  elements.bookDoctor.value = doctorId || (state.doctors[0]?.id || '');
 
   if (startIso) {
     const dt = new Date(startIso);
-    elements.bookDate.value = dt.toISOString().split('T')[0];
-    const hours = String(dt.getHours()).padStart(2, '0');
-    const mins = String(dt.getMinutes()).padStart(2, '0');
-    elements.bookTime.value = `${hours}:${mins}`;
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const d = String(dt.getDate()).padStart(2, '0');
+    const hh = String(dt.getHours()).padStart(2, '0');
+    const mm = String(dt.getMinutes()).padStart(2, '0');
+
+    elements.bookDate.value = `${y}-${m}-${d}`;
+    elements.bookTime.value = `${hh}:${mm}`;
   } else {
     elements.bookDate.value = state.selectedDate;
     elements.bookTime.value = '09:00';
   }
 
-  if (duration) {
-    elements.bookDuration.value = String(duration);
-  }
+  elements.bookDuration.value = String(duration || 30);
+  elements.bookPatientName.value = '';
+  elements.bookPatientPhone.value = '';
+  elements.bookNotes.value = '';
 
   elements.bookModal.style.display = 'flex';
 }
 
 function closeBookModal() {
   elements.bookModal.style.display = 'none';
-  elements.bookingConflictAlert.style.display = 'none';
 }
 
 async function handleBookSubmit(e) {
   e.preventDefault();
-  elements.bookingConflictAlert.style.display = 'none';
 
   const docId = elements.bookDoctor.value;
+  const patientName = elements.bookPatientName.value.trim();
   const dateStr = elements.bookDate.value;
   const timeStr = elements.bookTime.value;
   const duration = parseInt(elements.bookDuration.value, 10);
-  const patientName = elements.bookPatientName.value.trim();
   const patientPhone = elements.bookPatientPhone.value.trim();
   const notes = elements.bookNotes.value.trim();
+
+  if (!docId || !patientName || !dateStr || !timeStr) {
+    showToast('Please fill in all required fields.', 'error');
+    return;
+  }
 
   const startIso = `${dateStr}T${timeStr}:00`;
 
@@ -485,9 +488,9 @@ async function handleBookSubmit(e) {
       body: JSON.stringify({
         doctor_id: docId,
         patient_name: patientName,
-        patient_phone: patientPhone,
         start_time: startIso,
         duration_minutes: duration,
+        patient_phone: patientPhone,
         notes: notes,
       }),
     });
@@ -495,7 +498,6 @@ async function handleBookSubmit(e) {
     const data = await res.json();
 
     if (res.status === 409) {
-      // Conflict! Double-booking prevented!
       renderConflictAlert(data);
       return;
     }
@@ -507,7 +509,6 @@ async function handleBookSubmit(e) {
     closeBookModal();
     showToast(`Appointment booked successfully for ${patientName}!`, 'success');
 
-    // If on schedule tab, refresh schedule
     if (state.currentTab === 'schedule') {
       state.selectedDoctorId = docId;
       elements.doctorSelect.value = docId;
@@ -553,6 +554,209 @@ function renderConflictAlert(data) {
   }
 
   elements.bookingConflictAlert.style.display = 'block';
+}
+
+// ============================== Reschedule Modal (Twist 1 / T6) ==============================
+
+function openRescheduleModal(appt) {
+  elements.rescheduleConflictAlert.style.display = 'none';
+  elements.rescheduleApptId.value = appt.id;
+
+  const dt = new Date(appt.start_time);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const d = String(dt.getDate()).padStart(2, '0');
+  const hh = String(dt.getHours()).padStart(2, '0');
+  const mm = String(dt.getMinutes()).padStart(2, '0');
+
+  elements.rescheduleDate.value = `${y}-${m}-${d}`;
+  elements.rescheduleTime.value = `${hh}:${mm}`;
+  elements.rescheduleDuration.value = '';
+
+  elements.rescheduleApptSummary.innerHTML = `
+    <div><strong>Patient:</strong> ${escapeHtml(appt.patient_name)}</div>
+    <div><strong>Doctor:</strong> ${escapeHtml(appt.doctor_name || state.doctors.find(d => d.id === appt.doctor_id)?.name || '')}</div>
+    <div><strong>Current Scheduled Time:</strong> ${dt.toLocaleString()}</div>
+  `;
+
+  elements.rescheduleModal.style.display = 'flex';
+}
+
+function closeRescheduleModal() {
+  elements.rescheduleModal.style.display = 'none';
+}
+
+async function handleRescheduleSubmit(e) {
+  e.preventDefault();
+  const apptId = elements.rescheduleApptId.value;
+  const dateStr = elements.rescheduleDate.value;
+  const timeStr = elements.rescheduleTime.value;
+  const durationVal = elements.rescheduleDuration.value;
+
+  const newStartIso = `${dateStr}T${timeStr}:00`;
+
+  try {
+    const payload = {
+      new_start_time: newStartIso,
+    };
+    if (durationVal) {
+      payload.duration_minutes = parseInt(durationVal, 10);
+    }
+
+    const res = await fetch(`/api/appointments/${apptId}/reschedule`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+
+    if (res.status === 409) {
+      renderRescheduleConflictAlert(data);
+      return;
+    }
+
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to reschedule appointment');
+    }
+
+    closeRescheduleModal();
+    showToast('Appointment rescheduled successfully (conflict-free)!', 'success');
+
+    if (state.currentTab === 'schedule') {
+      loadSchedule();
+    } else if (state.currentTab === 'search') {
+      executePatientSearch();
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+function renderRescheduleConflictAlert(data) {
+  elements.rescheduleConflictTitle.textContent = "Scheduling Conflict Detected!";
+  elements.rescheduleConflictMessage.textContent = data.error;
+
+  elements.rescheduleConflictSuggestions.innerHTML = '';
+  if (data.suggested_slots && data.suggested_slots.length > 0) {
+    const title = document.createElement('p');
+    title.innerHTML = '<strong>Next Available Free Slots on this Day:</strong>';
+    elements.rescheduleConflictSuggestions.appendChild(title);
+
+    const list = document.createElement('ul');
+    data.suggested_slots.forEach(slot => {
+      const li = document.createElement('li');
+      const btn = document.createElement('a');
+      btn.href = '#';
+      btn.style.color = 'var(--primary)';
+      btn.style.fontWeight = '600';
+      btn.textContent = slot.formatted;
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const dt = new Date(slot.start_time);
+        const hours = String(dt.getHours()).padStart(2, '0');
+        const mins = String(dt.getMinutes()).padStart(2, '0');
+        elements.rescheduleTime.value = `${hours}:${mins}`;
+        elements.rescheduleConflictAlert.style.display = 'none';
+      });
+      li.appendChild(btn);
+      list.appendChild(li);
+    });
+    elements.rescheduleConflictSuggestions.appendChild(list);
+  }
+
+  elements.rescheduleConflictAlert.style.display = 'block';
+}
+
+// ============================== Complete Appointment ==============================
+
+async function completeAppointment(appointmentId) {
+  try {
+    const res = await fetch(`/api/appointments/${appointmentId}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to complete appointment');
+    }
+    showToast('Appointment marked as COMPLETED!', 'success');
+    if (state.currentTab === 'schedule') {
+      loadSchedule();
+    } else if (state.currentTab === 'search') {
+      executePatientSearch();
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// ============================== Add Doctor Modal ==============================
+
+function openAddDoctorModal() {
+  elements.newDocName.value = '';
+  elements.newDocSpecialty.value = '';
+  elements.newDocRoom.value = '';
+  elements.newDocStart.value = '08:30';
+  elements.newDocEnd.value = '17:00';
+  document.querySelectorAll('input[name="workDay"]').forEach(cb => {
+    cb.checked = parseInt(cb.value, 10) < 5;
+  });
+  elements.addDoctorModal.style.display = 'flex';
+}
+
+function closeAddDoctorModal() {
+  elements.addDoctorModal.style.display = 'none';
+}
+
+async function handleAddDoctorSubmit(e) {
+  e.preventDefault();
+  const name = elements.newDocName.value.trim();
+  const specialty = elements.newDocSpecialty.value.trim();
+  const room = elements.newDocRoom.value.trim();
+  const startTime = elements.newDocStart.value.trim();
+  const endTime = elements.newDocEnd.value.trim();
+
+  const workingDays = [];
+  document.querySelectorAll('input[name="workDay"]:checked').forEach(cb => {
+    workingDays.push(parseInt(cb.value, 10));
+  });
+
+  if (workingDays.length === 0) {
+    showToast('Please select at least one working day for the doctor.', 'error');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/doctors', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: name,
+        specialty: specialty,
+        room: room,
+        work_start_time: startTime,
+        work_end_time: endTime,
+        working_days: workingDays,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to onboard doctor');
+    }
+
+    closeAddDoctorModal();
+    showToast(`Doctor ${data.doctor.name} onboarded successfully!`, 'success');
+
+    await loadDoctors();
+    state.selectedDoctorId = data.doctor.id;
+    elements.doctorSelect.value = data.doctor.id;
+    loadSchedule();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
 }
 
 // ============================== Cancellation Modal ==============================
@@ -632,7 +836,6 @@ async function handleCancelSubmit(e) {
     const feeInfo = data.appointment.cancellation?.fee > 0 ? `Assessed fee: $${data.appointment.cancellation.fee.toFixed(2)}` : 'Cancellation was free.';
     showToast(`Appointment cancelled. Slot freed immediately! ${feeInfo}`, 'success');
 
-    // Refresh active views
     if (state.currentTab === 'schedule') {
       loadSchedule();
     } else if (state.currentTab === 'search') {
@@ -659,23 +862,23 @@ function setupSearch() {
 
   elements.btnClearSearch.addEventListener('click', () => {
     elements.patientSearchInput.value = '';
-    elements.searchResultsContainer.innerHTML = '<div class="empty-state"><p>Type a patient\'s name above to view appointments.</p></div>';
+    elements.searchResultsContainer.innerHTML = '<div class="empty-state"><p>Type a patient\'s name above to view their appointments.</p></div>';
   });
 }
 
 async function executePatientSearch() {
-  const query = elements.patientSearchInput.value.trim();
-  if (!query) {
-    elements.searchResultsContainer.innerHTML = '<div class="empty-state"><p>Type a patient\'s name above to view appointments.</p></div>';
+  const q = elements.patientSearchInput.value.trim();
+  if (!q) {
+    elements.searchResultsContainer.innerHTML = '<div class="empty-state"><p>Type a patient\'s name above to view their appointments.</p></div>';
     return;
   }
 
   try {
-    const res = await fetch(`/api/patients/search?query=${encodeURIComponent(query)}`);
+    const res = await fetch(`/api/patients/search?query=${encodeURIComponent(q)}`);
     const data = await res.json();
     renderSearchResults(data.results || []);
   } catch (err) {
-    elements.searchResultsContainer.innerHTML = `<div class="alert alert-danger">Search error: ${err.message}</div>`;
+    showToast(`Search error: ${err.message}`, 'error');
   }
 }
 
@@ -683,7 +886,7 @@ function renderSearchResults(results) {
   elements.searchResultsContainer.innerHTML = '';
 
   if (results.length === 0) {
-    elements.searchResultsContainer.innerHTML = '<div class="empty-state"><p>No matching patients found.</p></div>';
+    elements.searchResultsContainer.innerHTML = '<div class="empty-state"><p>No patients found matching your search.</p></div>';
     return;
   }
 
@@ -692,60 +895,55 @@ function renderSearchResults(results) {
     const appts = item.appointments;
 
     const card = document.createElement('div');
-    card.className = 'patient-card';
+    card.className = 'patient-search-card';
 
     let apptRows = '';
     if (appts.length === 0) {
-      apptRows = '<tr><td colspan="5" style="color: var(--text-muted);">No appointment records found.</td></tr>';
+      apptRows = '<tr><td colspan="5" class="text-center" style="color: var(--text-muted);">No booking history on file.</td></tr>';
     } else {
-      apptRows = appts.map(a => {
+      appts.forEach(a => {
         const sDt = new Date(a.start_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
-        let statusBadge = '';
-        let actionBtn = '';
+        let statusBadge = `<span class="badge badge-info">${a.status}</span>`;
+        if (a.status === 'CONFIRMED') statusBadge = '<span class="badge badge-success">Confirmed</span>';
+        if (a.status === 'CANCELLED_LATE') statusBadge = '<span class="badge badge-danger">Late Cancel</span>';
+        if (a.status === 'CANCELLED_FREE') statusBadge = '<span class="badge badge-warning">Cancelled</span>';
+        if (a.status === 'NO_SHOW') statusBadge = '<span class="badge badge-danger">No Show</span>';
 
-        if (a.status === 'CONFIRMED') {
-          statusBadge = '<span class="badge badge-success">Confirmed</span>';
-          actionBtn = `<button class="btn btn-secondary btn-sm" onclick="openCancelModal('${a.id}')">Cancel</button>`;
-        } else if (a.status === 'CANCELLED_FREE') {
-          statusBadge = '<span class="badge badge-info">Cancelled (Free)</span>';
-        } else if (a.status === 'CANCELLED_LATE') {
-          const feeStr = a.cancellation?.waived ? 'Fee: $0 (Waived)' : `$${a.cancellation?.fee.toFixed(2)}`;
-          statusBadge = `<span class="badge badge-danger">Cancelled (Late) &bull; ${feeStr}</span>`;
-        } else {
-          statusBadge = `<span class="badge badge-warning">${a.status}</span>`;
-        }
+        const actionBtns = a.status === 'CONFIRMED' ? `
+          <button class="btn btn-secondary btn-sm" onclick="openRescheduleModalById('${a.id}', '${escapeHtml(a.patient_name)}', '${escapeHtml(a.doctor_name)}', '${a.start_time}')">Reschedule</button>
+          <button class="btn btn-secondary btn-sm" onclick="completeAppointment('${a.id}')">Complete</button>
+          <button class="btn btn-secondary btn-sm" onclick="openCancelModal('${a.id}')">Cancel</button>
+        ` : '-';
 
-        return `
+        apptRows += `
           <tr>
-            <td><strong>${sDt}</strong></td>
-            <td>${escapeHtml(a.doctor_name || 'N/A')}</td>
-            <td>${escapeHtml(a.notes || 'General Consult')}</td>
+            <td>${sDt}</td>
+            <td><strong>${escapeHtml(a.doctor_name)}</strong></td>
             <td>${statusBadge}</td>
-            <td>${actionBtn}</td>
+            <td>${escapeHtml(a.notes || '')}</td>
+            <td>${actionBtns}</td>
           </tr>
         `;
-      }).join('');
+      });
     }
 
     card.innerHTML = `
-      <div class="patient-header">
+      <div class="patient-card-header">
         <div>
-          <h3>${escapeHtml(p.name)}</h3>
-          <div class="patient-contact">Phone: ${escapeHtml(p.phone)} ${p.email ? `&bull; Email: ${escapeHtml(p.email)}` : ''}</div>
+          <h4>${escapeHtml(p.name)}</h4>
+          <p>Phone: ${escapeHtml(p.phone)} ${p.email ? `&bull; Email: ${escapeHtml(p.email)}` : ''}</p>
         </div>
-        <button class="btn btn-secondary btn-sm" onclick="openBookModalForPatient('${p.id}', '${escapeHtml(p.name)}', '${escapeHtml(p.phone)}')">
-          + Book For Patient
-        </button>
+        <button class="btn btn-secondary btn-sm" onclick="openBookModalForPatient('${p.id}', '${escapeHtml(p.name)}', '${escapeHtml(p.phone)}')">+ Book for Patient</button>
       </div>
-      <div class="table-responsive">
+      <div class="table-responsive" style="margin-top: 12px;">
         <table class="data-table">
           <thead>
             <tr>
               <th>Date & Time</th>
               <th>Doctor</th>
-              <th>Notes / Reason</th>
-              <th>Status & Fee</th>
-              <th>Action</th>
+              <th>Status</th>
+              <th>Notes</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -765,7 +963,17 @@ window.openBookModalForPatient = function(patientId, name, phone) {
   elements.bookPatientPhone.value = phone;
 };
 
+window.openRescheduleModalById = function(apptId, patientName, doctorName, startTime) {
+  openRescheduleModal({
+    id: apptId,
+    patient_name: patientName,
+    doctor_name: doctorName,
+    start_time: startTime,
+  });
+};
+
 window.openCancelModal = openCancelModal;
+window.completeAppointment = completeAppointment;
 
 // ============================== Cancellation Ledger ==============================
 
@@ -828,6 +1036,121 @@ function renderLedger(data) {
   });
 }
 
+// ============================== Clock & Outbox (Twists 2 & 3) ==============================
+
+function setupClockAndOutbox() {
+  elements.btnRefreshOutbox.addEventListener('click', loadOutbox);
+  elements.btnClearOutbox.addEventListener('click', clearOutbox);
+
+  elements.btnAdvanceClock.addEventListener('click', () => {
+    const val = elements.advanceClockInput.value;
+    if (!val) {
+      showToast('Please select a valid date/time to advance the clock to.', 'error');
+      return;
+    }
+    advanceClock(val);
+  });
+
+  elements.btnAdvance30Min.addEventListener('click', () => {
+    if (!state.currentSimulatedTime) return;
+    const cur = new Date(state.currentSimulatedTime);
+    cur.setMinutes(cur.getMinutes() + 30);
+    advanceClock(cur.toISOString());
+  });
+
+  elements.btnAdvanceTomorrowMorning.addEventListener('click', () => {
+    if (!state.currentSimulatedTime) return;
+    const cur = new Date(state.currentSimulatedTime);
+    cur.setDate(cur.getDate() + 1);
+    cur.setHours(8, 0, 0, 0);
+    advanceClock(cur.toISOString());
+  });
+}
+
+async function loadClock() {
+  try {
+    const res = await fetch('/clock');
+    const data = await res.json();
+    state.currentSimulatedTime = data.current_time;
+    const dt = new Date(data.current_time);
+    elements.currentClockDisplay.textContent = dt.toLocaleString();
+
+    // Populate advance clock input with current + 30 min as default placeholder
+    const nextDt = new Date(dt.getTime() + 30 * 60000);
+    const localIso = new Date(nextDt.getTime() - nextDt.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    elements.advanceClockInput.value = localIso;
+  } catch (err) {
+    console.error('Error loading clock:', err);
+  }
+}
+
+async function advanceClock(timeStr) {
+  try {
+    const res = await fetch('/clock', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_time: timeStr }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to advance clock');
+    }
+    showToast(`System clock advanced to ${data.current_time}! Automated jobs executed.`, 'success');
+    await loadClock();
+    await loadOutbox();
+    if (state.currentTab === 'schedule') {
+      loadSchedule();
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function loadOutbox() {
+  try {
+    const res = await fetch('/outbox');
+    const outbox = await res.json();
+    renderOutbox(outbox);
+  } catch (err) {
+    showToast(`Error loading outbox: ${err.message}`, 'error');
+  }
+}
+
+async function clearOutbox() {
+  try {
+    const res = await fetch('/outbox', { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to clear outbox');
+    showToast('Outbox cleared.', 'success');
+    loadOutbox();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+function renderOutbox(outbox) {
+  elements.outboxTableBody.innerHTML = '';
+  if (!outbox || outbox.length === 0) {
+    elements.outboxTableBody.innerHTML = '<tr><td colspan="6" class="text-center">No notifications in outbox.</td></tr>';
+    return;
+  }
+
+  outbox.forEach(n => {
+    const tr = document.createElement('tr');
+    const createdDt = new Date(n.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+    const apptDt = new Date(n.appointment_time).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+
+    tr.innerHTML = `
+      <td>${createdDt}</td>
+      <td><strong>${escapeHtml(n.recipient_name)}</strong></td>
+      <td>${escapeHtml(n.recipient_contact || 'N/A')}</td>
+      <td>${escapeHtml(n.doctor_name)}</td>
+      <td>${apptDt}</td>
+      <td><span style="font-size: 0.9rem;">${escapeHtml(n.message)}</span></td>
+    `;
+    elements.outboxTableBody.appendChild(tr);
+  });
+}
+
 // ============================== Helpers ==============================
 
 function formatTime(isoString) {
@@ -853,4 +1176,3 @@ function showToast(message, type = 'info') {
 
 // Kick off
 window.addEventListener('DOMContentLoaded', init);
-

@@ -19,6 +19,7 @@ from .models import (
     Patient,
     TimeSlot,
 )
+from .notifications import Notification
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS doctors (
@@ -61,6 +62,20 @@ CREATE TABLE IF NOT EXISTS cancellations (
     waiver_reason TEXT
 );
 
+CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    recipient_id TEXT NOT NULL,
+    recipient_name TEXT NOT NULL,
+    recipient_contact TEXT DEFAULT '',
+    appointment_id TEXT NOT NULL,
+    doctor_id TEXT NOT NULL,
+    doctor_name TEXT NOT NULL,
+    appointment_time TEXT NOT NULL,
+    message TEXT NOT NULL,
+    notification_type TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_appt_doc_active 
     ON appointments(doctor_id, status, start_time, end_time);
 
@@ -69,6 +84,9 @@ CREATE INDEX IF NOT EXISTS idx_appt_patient_active
 
 CREATE INDEX IF NOT EXISTS idx_patients_name 
     ON patients(name COLLATE NOCASE);
+
+CREATE INDEX IF NOT EXISTS idx_notif_appt_date
+    ON notifications(appointment_id, appointment_time);
 """
 
 
@@ -466,6 +484,30 @@ class ClinicRepository:
             rows = conn.execute(sql, params).fetchall()
             return [self._row_to_appointment(row) for row in rows]
 
+    def get_active_appointments_in_range(
+        self,
+        start_range: datetime,
+        end_range: datetime,
+    ) -> List[Appointment]:
+        """Fetches active (CONFIRMED/COMPLETED) appointments within the datetime range."""
+        start_iso = start_range.isoformat()
+        end_iso = end_range.isoformat()
+        sql = """
+            SELECT a.*, d.name AS doctor_name, p.name AS patient_name, p.phone AS patient_phone,
+                   c.cancelled_at, c.notice_hours, c.fee, c.is_late, c.waived, c.reason, c.waiver_reason
+            FROM appointments a
+            JOIN doctors d ON a.doctor_id = d.id
+            JOIN patients p ON a.patient_id = p.id
+            LEFT JOIN cancellations c ON a.id = c.appointment_id
+            WHERE a.start_time >= ?
+              AND a.start_time <= ?
+              AND a.status IN ('CONFIRMED', 'COMPLETED')
+            ORDER BY a.start_time ASC
+        """
+        with self.get_connection() as conn:
+            rows = conn.execute(sql, (start_iso, end_iso)).fetchall()
+            return [self._row_to_appointment(row) for row in rows]
+
     def get_patient_appointments(
         self,
         patient_id: str,
@@ -546,4 +588,177 @@ class ClinicRepository:
             patient_phone=row["patient_phone"] if "patient_phone" in row.keys() else None,
             cancellation=cancellation,
         )
+
+    # ------------------ Rescheduling (Twist 1) ------------------
+
+    def reschedule_appointment_atomic(
+        self,
+        appointment_id: str,
+        new_start_time: datetime,
+        new_end_time: datetime,
+    ) -> tuple[bool, Optional[Appointment], Optional[str]]:
+        """
+        Atomically reschedules an appointment to a new time interval while
+        excluding self from overlap collision checks.
+        Returns (True, None, None) on success.
+        Returns (False, conflicting_appointment, conflict_type) if conflict detected.
+        """
+        with self._lock:
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE;")
+                try:
+                    appt = self.get_appointment(appointment_id)
+                    if not appt:
+                        conn.execute("ROLLBACK;")
+                        return False, None, "not_found"
+
+                    # Check doctor overlap (excluding current appointment)
+                    doc_conflicts = self.find_conflicting_appointments(
+                        doctor_id=appt.doctor_id,
+                        start_time=new_start_time,
+                        end_time=new_end_time,
+                        exclude_appointment_id=appointment_id,
+                        conn=conn,
+                    )
+                    if doc_conflicts:
+                        conn.execute("ROLLBACK;")
+                        return False, doc_conflicts[0], "doctor_conflict"
+
+                    # Check patient overlap (excluding current appointment)
+                    pat_conflicts = self.find_patient_conflicting_appointments(
+                        patient_id=appt.patient_id,
+                        start_time=new_start_time,
+                        end_time=new_end_time,
+                        exclude_appointment_id=appointment_id,
+                        conn=conn,
+                    )
+                    if pat_conflicts:
+                        conn.execute("ROLLBACK;")
+                        return False, pat_conflicts[0], "patient_conflict"
+
+                    # Update appointment
+                    conn.execute(
+                        """
+                        UPDATE appointments
+                        SET start_time = ?, end_time = ?, status = 'CONFIRMED'
+                        WHERE id = ?
+                        """,
+                        (new_start_time.isoformat(), new_end_time.isoformat(), appointment_id),
+                    )
+                    conn.execute("COMMIT;")
+                    return True, None, None
+                except Exception:
+                    conn.execute("ROLLBACK;")
+                    raise
+
+    # ------------------ Appointment Completion ------------------
+
+    def complete_appointment_atomic(self, appointment_id: str) -> bool:
+        """Marks appointment as COMPLETED so it won't be flagged as NO_SHOW."""
+        with self._lock:
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE;")
+                try:
+                    cur = conn.execute(
+                        "UPDATE appointments SET status = 'COMPLETED' WHERE id = ? AND status = 'CONFIRMED'",
+                        (appointment_id,),
+                    )
+                    success = cur.rowcount > 0
+                    conn.execute("COMMIT;")
+                    return success
+                except Exception:
+                    conn.execute("ROLLBACK;")
+                    raise
+
+    # ------------------ Auto No-Show (Twist 3) ------------------
+
+    def mark_no_shows_atomic(self, cutoff_time: datetime) -> List[Appointment]:
+        """
+        Finds all CONFIRMED appointments where start_time <= cutoff_time (e.g. current_time - 30 min)
+        and atomically transitions their status to NO_SHOW.
+        """
+        cutoff_iso = cutoff_time.isoformat()
+        with self._lock:
+            with self.get_connection() as conn:
+                conn.execute("BEGIN IMMEDIATE;")
+                try:
+                    # Find candidates
+                    rows = conn.execute(
+                        """
+                        SELECT a.*, d.name AS doctor_name, p.name AS patient_name, p.phone AS patient_phone,
+                               c.cancelled_at, c.notice_hours, c.fee, c.is_late, c.waived, c.reason, c.waiver_reason
+                        FROM appointments a
+                        JOIN doctors d ON a.doctor_id = d.id
+                        JOIN patients p ON a.patient_id = p.id
+                        LEFT JOIN cancellations c ON a.id = c.appointment_id
+                        WHERE a.status = 'CONFIRMED'
+                          AND a.start_time <= ?
+                        """,
+                        (cutoff_iso,),
+                    ).fetchall()
+
+                    no_shows = [self._row_to_appointment(r) for r in rows]
+
+                    if no_shows:
+                        conn.execute(
+                            "UPDATE appointments SET status = 'NO_SHOW' WHERE status = 'CONFIRMED' AND start_time <= ?",
+                            (cutoff_iso,),
+                        )
+
+                    conn.execute("COMMIT;")
+                    return no_shows
+                except Exception:
+                    conn.execute("ROLLBACK;")
+                    raise
+
+    # ------------------ Notifications & Outbox (Twist 2) ------------------
+
+    def save_notification(self, notif: Notification) -> None:
+        with self._lock:
+            with self.get_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO notifications (
+                        id, recipient_id, recipient_name, recipient_contact, appointment_id,
+                        doctor_id, doctor_name, appointment_time, message, notification_type, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        notif.id,
+                        notif.recipient_id,
+                        notif.recipient_name,
+                        notif.recipient_contact,
+                        notif.appointment_id,
+                        notif.doctor_id,
+                        notif.doctor_name,
+                        notif.appointment_time.isoformat() if isinstance(notif.appointment_time, datetime) else notif.appointment_time,
+                        notif.message,
+                        notif.notification_type,
+                        notif.created_at.isoformat() if isinstance(notif.created_at, datetime) else notif.created_at,
+                    ),
+                )
+
+    def get_outbox(self) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = conn.execute("SELECT * FROM notifications ORDER BY created_at DESC").fetchall()
+            return [dict(r) for r in rows]
+
+    def clear_outbox(self) -> None:
+        with self._lock:
+            with self.get_connection() as conn:
+                conn.execute("DELETE FROM notifications")
+
+    def has_reminder_been_sent(self, appointment_id: str, date_str: str) -> bool:
+        with self.get_connection() as conn:
+            prefix = f"{date_str}%"
+            row = conn.execute(
+                """
+                SELECT id FROM notifications
+                WHERE appointment_id = ?
+                  AND notification_type = 'REMINDER'
+                  AND created_at LIKE ?
+                """,
+                (appointment_id, prefix),
+            ).fetchone()
+            return row is not None
 

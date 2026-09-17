@@ -38,6 +38,10 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
           Cancellation Ledger
         </button>
+        <button class="nav-tab" data-tab="clock" role="tab">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          Clock & Outbox
+        </button>
       </nav>
 
       <div class="nav-actions">
@@ -150,7 +154,108 @@
           </div>
         </div>
       </section>
+
+      <!-- TAB 4: SIMULATED CLOCK & OUTBOX (Twists 2 & 3) -->
+      <section id="tab-clock" class="tab-pane">
+        <div class="filter-card">
+          <div class="filter-group">
+            <label><strong>Current Simulated System Time:</strong></label>
+            <span id="currentClockDisplay" class="badge badge-info" style="font-size: 1.05rem; padding: 6px 12px;">--:--:--</span>
+          </div>
+
+          <div class="filter-group" style="display: flex; gap: 8px; align-items: flex-end;">
+            <div>
+              <label for="advanceClockInput">Set / Advance Clock To:</label>
+              <input type="datetime-local" id="advanceClockInput" class="form-input">
+            </div>
+            <button class="btn btn-primary" id="btnAdvanceClock">Advance Clock</button>
+            <button class="btn btn-secondary" id="btnAdvance30Min">+30 Minutes</button>
+            <button class="btn btn-secondary" id="btnAdvanceTomorrowMorning">Next Morning (08:00)</button>
+          </div>
+        </div>
+
+        <div class="table-card" style="margin-top: 20px;">
+          <div class="table-card-header">
+            <h3>Notification Service Outbox</h3>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn btn-secondary btn-sm" id="btnRefreshOutbox">Refresh Outbox</button>
+              <button class="btn btn-danger btn-sm" id="btnClearOutbox">Clear Outbox</button>
+            </div>
+          </div>
+          <p class="search-hint" style="padding: 0 16px 8px 16px;">
+            Auto-dispatched morning reminders for patient appointments. Evaluated upon clock advancement.
+          </p>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Dispatched Time</th>
+                  <th>Patient Recipient</th>
+                  <th>Phone / Contact</th>
+                  <th>Doctor</th>
+                  <th>Appointment Time</th>
+                  <th>Notification Message</th>
+                </tr>
+              </thead>
+              <tbody id="outboxTableBody">
+                <tr><td colspan="6" class="text-center">No notifications in outbox.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
     </main>
+  </div>
+
+  <!-- RESCHEDULE MODAL (Twist 1 / T6) -->
+  <div class="modal-backdrop" id="rescheduleModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Reschedule Appointment</h3>
+        <button class="modal-close" id="btnCloseRescheduleModal">&times;</button>
+      </div>
+      <form id="rescheduleForm">
+        <input type="hidden" id="rescheduleApptId">
+        <div class="modal-body">
+          <div class="appt-preview-summary" id="rescheduleApptSummary">
+            <!-- Populated dynamically -->
+          </div>
+
+          <div id="rescheduleConflictAlert" class="alert alert-danger" style="display: none;">
+            <strong id="rescheduleConflictTitle">Conflict Detected!</strong>
+            <p id="rescheduleConflictMessage"></p>
+            <div id="rescheduleConflictSuggestions" class="conflict-suggestions"></div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="rescheduleDate">New Date *</label>
+              <input type="date" id="rescheduleDate" class="form-input" required>
+            </div>
+            <div class="form-group">
+              <label for="rescheduleTime">New Start Time *</label>
+              <input type="time" id="rescheduleTime" class="form-input" required step="300">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="rescheduleDuration">Duration (minutes)</label>
+            <select id="rescheduleDuration" class="form-select">
+              <option value="">Keep Existing Duration</option>
+              <option value="15">15 minutes</option>
+              <option value="30">30 minutes</option>
+              <option value="45">45 minutes</option>
+              <option value="60">60 minutes</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btnCancelRescheduleModal">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="btnSubmitReschedule">Confirm Reschedule</button>
+        </div>
+      </form>
+    </div>
   </div>
 
   <!-- BOOKING MODAL -->
