@@ -1,0 +1,17 @@
+Here is a high-level summary of the thought process and engineering design behind the solution:
+
+1. **Domain Modeling & Mathematical Interval Logic**:
+   The core challenge was preventing double-booking under all edge cases. Appointments were modeled as half-open time intervals $[s_1, e_1)$ and evaluated against existing active bookings using the standard overlap criterion $\max(s_1, s_2) < \min(e_1, e_2)$, which naturally permits back-to-back adjacent slots without false conflicts.
+
+2. **Concurrency Safety & Storage**:
+   To prevent race conditions during concurrent bookings, SQLite was selected with Write-Ahead Logging (WAL) mode and explicit immediate write transactions (`BEGIN IMMEDIATE`) inside thread locks. This ensures all conflict lookups and record insertions execute atomically.
+
+3. **Policy-Driven Cancellation Engine**:
+   A dedicated cancellation engine was decoupled from storage to calculate advance notice relative to the appointment start time ($24\text{h}$ threshold), automatically determining fee eligibility while supporting administrative emergency fee waivers and immediate slot release.
+
+4. **Extensible Architecture for Advanced Lifecycle Twists**:
+   - **Rescheduling**: Extended the repository transactions to exclude the appointment's own prior time slot from collision checks while keeping doctor and patient invariants intact.
+   - **Simulated Clock & Event Dispatching**: Built an event-driven `SystemClock` to decouple time management from wall-clock dependencies. Advancing simulated time triggers morning reminder generation into an outbox table (with date-level idempotency) and automatically transitions overdue uncompleted appointments to `NO_SHOW` status after 30 minutes.
+
+5. **Multi-Interface & Test-Driven Verification**:
+   The domain logic was wrapped with a zero-dependency Python REST API and CLI, then validated across 47 comprehensive unit, boundary, and multi-threaded concurrency tests.
