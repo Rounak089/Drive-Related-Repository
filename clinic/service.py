@@ -52,6 +52,85 @@ class ClinicService:
         self.repo = repository
         self.policy = policy or CancellationPolicy(cutoff_hours=24.0, late_fee=25.0)
 
+    # ------------------ Doctor Management ------------------
+
+    def add_doctor(
+        self,
+        name: str,
+        specialty: str,
+        room: str,
+        work_start_time: str = "08:30",
+        work_end_time: str = "17:00",
+        working_days: Optional[List[int]] = None,
+        doctor_id: Optional[str] = None,
+    ) -> Doctor:
+        """
+        Onboards a new doctor to the clinic.
+        Validates doctor profile, operating shifts, and working days.
+        """
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValidationError("Doctor name cannot be empty.")
+        if not clean_name.startswith("Dr."):
+            clean_name = f"Dr. {clean_name}"
+
+        clean_specialty = specialty.strip()
+        if not clean_specialty:
+            raise ValidationError("Specialty / Department cannot be empty.")
+
+        clean_room = room.strip()
+        if not clean_room:
+            raise ValidationError("Room / Office location cannot be empty.")
+
+        # Validate shift times
+        try:
+            s_h, s_m = map(int, work_start_time.split(":"))
+            e_h, e_m = map(int, work_end_time.split(":"))
+            if not (0 <= s_h <= 23 and 0 <= s_m <= 59 and 0 <= e_h <= 23 and 0 <= e_m <= 59):
+                raise ValueError()
+        except Exception:
+            raise ValidationError(
+                f"Invalid shift time format. Must be HH:MM (got start='{work_start_time}', end='{work_end_time}')."
+            )
+
+        if (s_h * 60 + s_m) >= (e_h * 60 + e_m):
+            raise ValidationError(
+                f"Shift start time ({work_start_time}) must be strictly earlier than shift end time ({work_end_time})."
+            )
+
+        # Validate working days (0=Mon, 6=Sun)
+        if working_days is None or len(working_days) == 0:
+            days = [0, 1, 2, 3, 4]  # Default Mon-Fri
+        else:
+            days = []
+            for d in working_days:
+                if not isinstance(d, int) or d < 0 or d > 6:
+                    raise ValidationError(f"Invalid working day: {d}. Must be an integer between 0 (Monday) and 6 (Sunday).")
+                if d not in days:
+                    days.append(d)
+            days.sort()
+
+        if not doctor_id:
+            slug = "".join(c for c in clean_name.replace("Dr.", "").strip().lower().replace(" ", "_") if c.isalnum() or c == "_")
+            slug = slug[:12] or "new"
+            doctor_id = f"doc_{slug}_{uuid.uuid4().hex[:4]}"
+
+        # Check existing doctor with same ID
+        if self.repo.get_doctor(doctor_id):
+            raise ConflictError(f"A doctor with ID '{doctor_id}' already exists.")
+
+        doctor = Doctor(
+            id=doctor_id,
+            name=clean_name,
+            specialty=clean_specialty,
+            room=clean_room,
+            work_start_time=work_start_time,
+            work_end_time=work_end_time,
+            working_days=days,
+        )
+        self.repo.save_doctor(doctor)
+        return doctor
+
     # ------------------ Booking ------------------
 
     def book_appointment(

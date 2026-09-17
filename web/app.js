@@ -44,6 +44,18 @@ const elements = {
   conflictMessage: document.getElementById('conflictMessage'),
   conflictSuggestions: document.getElementById('conflictSuggestions'),
 
+  // Add Doctor Modal
+  btnOpenAddDoctorModal: document.getElementById('btnOpenAddDoctorModal'),
+  addDoctorModal: document.getElementById('addDoctorModal'),
+  btnCloseAddDoctorModal: document.getElementById('btnCloseAddDoctorModal'),
+  btnCancelAddDoctorModal: document.getElementById('btnCancelAddDoctorModal'),
+  addDoctorForm: document.getElementById('addDoctorForm'),
+  newDocName: document.getElementById('newDocName'),
+  newDocSpecialty: document.getElementById('newDocSpecialty'),
+  newDocRoom: document.getElementById('newDocRoom'),
+  newDocStart: document.getElementById('newDocStart'),
+  newDocEnd: document.getElementById('newDocEnd'),
+
   // Cancellation Modal
   cancelModal: document.getElementById('cancelModal'),
   btnCloseCancelModal: document.getElementById('btnCloseCancelModal'),
@@ -346,6 +358,79 @@ function setupModals() {
     elements.waiverReasonGroup.style.display = e.target.checked ? 'block' : 'none';
     elements.cancelWaiverReason.required = e.target.checked;
   });
+
+  // Add Doctor modal buttons
+  if (elements.btnOpenAddDoctorModal) {
+    elements.btnOpenAddDoctorModal.addEventListener('click', openAddDoctorModal);
+  }
+  if (elements.btnCloseAddDoctorModal) {
+    elements.btnCloseAddDoctorModal.addEventListener('click', closeAddDoctorModal);
+  }
+  if (elements.btnCancelAddDoctorModal) {
+    elements.btnCancelAddDoctorModal.addEventListener('click', closeAddDoctorModal);
+  }
+  if (elements.addDoctorForm) {
+    elements.addDoctorForm.addEventListener('submit', handleAddDoctorSubmit);
+  }
+}
+
+function openAddDoctorModal() {
+  elements.addDoctorForm.reset();
+  elements.newDocStart.value = '08:30';
+  elements.newDocEnd.value = '17:00';
+  // Default Mon-Fri checked
+  document.querySelectorAll('input[name="workDay"]').forEach((cb, idx) => {
+    cb.checked = idx < 5;
+  });
+  elements.addDoctorModal.style.display = 'flex';
+}
+
+function closeAddDoctorModal() {
+  elements.addDoctorModal.style.display = 'none';
+}
+
+async function handleAddDoctorSubmit(e) {
+  e.preventDefault();
+
+  const name = elements.newDocName.value.trim();
+  const specialty = elements.newDocSpecialty.value.trim();
+  const room = elements.newDocRoom.value.trim();
+  const start_time = elements.newDocStart.value.trim();
+  const end_time = elements.newDocEnd.value.trim();
+
+  const days = Array.from(document.querySelectorAll('input[name="workDay"]:checked'))
+    .map(cb => parseInt(cb.value, 10));
+
+  try {
+    const res = await fetch('/api/doctors', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        specialty,
+        room,
+        work_start_time: start_time,
+        work_end_time: end_time,
+        working_days: days,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Failed to onboard doctor');
+    }
+
+    closeAddDoctorModal();
+    showToast(`Dr. ${data.doctor.name.replace(/^Dr\.\s*/, '')} onboarded successfully!`, 'success');
+
+    // Reload doctors and select the new doctor immediately
+    await loadDoctors();
+    state.selectedDoctorId = data.doctor.id;
+    elements.doctorSelect.value = data.doctor.id;
+    await loadSchedule();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
 }
 
 function openBookModalWithPreset(doctorId, startIso, duration) {

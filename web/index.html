@@ -41,6 +41,10 @@
       </nav>
 
       <div class="nav-actions">
+        <button class="btn btn-secondary" id="btnOpenAddDoctorModal">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+          Add Doctor
+        </button>
         <button class="btn btn-primary" id="btnOpenBookModal">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Book Appointment
@@ -254,6 +258,64 @@
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" id="btnDismissCancelModal">Keep Appointment</button>
           <button type="submit" class="btn btn-danger" id="btnConfirmCancel">Confirm Cancellation</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ADD DOCTOR MODAL -->
+  <div class="modal-backdrop" id="addDoctorModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Onboard New Doctor</h3>
+        <button class="modal-close" id="btnCloseAddDoctorModal">&times;</button>
+      </div>
+      <form id="addDoctorForm">
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="newDocName">Doctor Full Name *</label>
+            <input type="text" id="newDocName" class="form-input" placeholder="e.g. Dr. Allison Cameron" required>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="newDocSpecialty">Department / Specialty *</label>
+              <input type="text" id="newDocSpecialty" class="form-input" placeholder="e.g. Immunology & Allergy" required>
+            </div>
+            <div class="form-group">
+              <label for="newDocRoom">Room / Office Location *</label>
+              <input type="text" id="newDocRoom" class="form-input" placeholder="e.g. Room 305" required>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="newDocStart">Shift Start Time *</label>
+              <input type="time" id="newDocStart" class="form-input" value="08:30" required>
+            </div>
+            <div class="form-group">
+              <label for="newDocEnd">Shift End Time *</label>
+              <input type="time" id="newDocEnd" class="form-input" value="17:00" required>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>Working Days (Clinic Hours):</label>
+            <div class="days-checkbox-grid">
+              <label class="day-checkbox"><input type="checkbox" name="workDay" value="0" checked> Mon</label>
+              <label class="day-checkbox"><input type="checkbox" name="workDay" value="1" checked> Tue</label>
+              <label class="day-checkbox"><input type="checkbox" name="workDay" value="2" checked> Wed</label>
+              <label class="day-checkbox"><input type="checkbox" name="workDay" value="3" checked> Thu</label>
+              <label class="day-checkbox"><input type="checkbox" name="workDay" value="4" checked> Fri</label>
+              <label class="day-checkbox"><input type="checkbox" name="workDay" value="5"> Sat</label>
+              <label class="day-checkbox"><input type="checkbox" name="workDay" value="6"> Sun</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btnCancelAddDoctorModal">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="btnSubmitAddDoctor">Save & Add Doctor</button>
         </div>
       </form>
     </div>

@@ -19,17 +19,21 @@ A high-reliability scheduling and appointment management system designed specifi
    - **Emergency Supervisor Waiver**: Desk staff can waive the fee for verified emergencies (family medical crisis, hospital admission) with mandatory audit justification.
    - **Immediate Slot Freeing**: Once an appointment is cancelled, that doctor's time slot is released instantly for other patients to book.
 
-3. **Doctor Daily Schedule View ("A Doctor's Day")**:
+3. **New Doctor Onboarding**:
+   - Easily register new doctors joining the hospital/clinic with full specialty/department details, room/office location, operating shift hours, and working clinic days.
+   - Immediately makes the new doctor's schedule available for appointments across both the Web UI and CLI.
+
+4. **Doctor Daily Schedule View ("A Doctor's Day")**:
    - Interactive visual timeline displaying every block in the doctor's shift.
    - Distinct visualization for **Booked slots** (with patient name, phone, clinical notes) and **Free gaps** (showing exact duration available and "+ Book Slot" quick-action).
    - Real-time metrics: Booked minutes, Free minutes, Utilization percentage, Active appointment count.
 
-4. **Instant Patient Search**:
+5. **Instant Patient Search**:
    - Case-insensitive, partial-match lookup by patient name (e.g., searching `"ali"` finds `"Alice Smith"`).
    - Shows patient contact details and full historical records across active bookings, completed visits, and cancelled appointments with cancellation fee metadata.
 
-5. **Dual User Interfaces**:
-   - **Interactive Web Dashboard**: Modern single-page app with zero npm/pip dependencies, live timeline, conflict modal with suggested slots, cancellation preview, and audit ledger.
+6. **Dual User Interfaces**:
+   - **Interactive Web Dashboard**: Modern single-page app with zero npm/pip dependencies, live timeline, conflict modal with suggested slots, cancellation preview, doctor onboarding dialog, and audit ledger.
    - **Command Line Interface (`cli.py`)**: Fast keyboard-driven interface featuring both interactive menus and scriptable subcommands.
 
 ---
@@ -99,6 +103,11 @@ This presents an interactive menu to view schedules, book, cancel, search, or in
 py cli.py doctors
 ```
 
+**Onboard a New Doctor:**
+```powershell
+py cli.py add-doctor --name "Dr. Gregory House" --specialty "Diagnostic Medicine" --room "Room 402" --start "09:00" --end "16:00"
+```
+
 **View Doctor's Schedule for a Given Date:**
 ```powershell
 py cli.py schedule --doctor doc_chen --date 2026-09-17
@@ -129,12 +138,13 @@ py cli.py cancel apt_12345 --waive --waiver-reason "Medical emergency approved b
 
 ## Running the Automated Test Suite
 
-Run all 24 unit and concurrency tests:
+Run all 29 unit and concurrency tests:
 ```powershell
 py -m unittest discover -s tests -v
 ```
 
 Test coverage includes:
+- **`test_doctor.py`**: Onboarding new doctors, profile and room validation, shift time checks, custom working days, and schedule creation.
 - **`test_overlap.py`**: Identical overlap, partial start/end overlaps, enclosed/enclosing slots, back-to-back non-overlapping adjacent slots, re-booking after cancellation, patient-side double booking.
 - **`test_cancellation.py`**: Free cancellation ($\ge 24\text{h}$), late fee charge ($< 24\text{h}$), exact 24h boundary condition, emergency supervisor fee waiver, cancellation preview.
 - **`test_schedule.py`**: Complete day schedule calculation, timeline gap segmentation, shift metrics, utilization percent, bookable slot generator.

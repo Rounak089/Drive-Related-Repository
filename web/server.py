@@ -142,7 +142,36 @@ class ClinicApiHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
-        if path == "/api/appointments":
+        if path == "/api/doctors":
+            # Onboard new doctor
+            try:
+                body = self._parse_body()
+                name = body.get("name", "")
+                specialty = body.get("specialty", "")
+                room = body.get("room", "")
+                work_start_time = body.get("work_start_time", "08:30")
+                work_end_time = body.get("work_end_time", "17:00")
+                working_days = body.get("working_days", [0, 1, 2, 3, 4])
+                doctor_id = body.get("doctor_id")
+
+                doctor = self.service.add_doctor(
+                    name=name,
+                    specialty=specialty,
+                    room=room,
+                    work_start_time=work_start_time,
+                    work_end_time=work_end_time,
+                    working_days=working_days,
+                    doctor_id=doctor_id,
+                )
+                return self._send_json({"success": True, "doctor": doctor.to_dict()}, 201)
+            except ValidationError as ve:
+                return self._send_error(str(ve), 400)
+            except ConflictError as ce:
+                return self._send_error(str(ce), 409)
+            except Exception as ex:
+                return self._send_error(f"Internal error: {ex}", 500)
+
+        elif path == "/api/appointments":
             # Book appointment
             try:
                 body = self._parse_body()
