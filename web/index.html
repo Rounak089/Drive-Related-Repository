@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clinic Front Desk — Conflict-Free Booking & Scheduling</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Navigation Sidebar / Topbar -->
+    <header class="navbar">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M12 6v12m-6-6h12" />
+          </svg>
+        </div>
+        <div>
+          <h1 class="brand-title">Apex Care Clinic</h1>
+          <p class="brand-subtitle">Front Desk Booking & Conflict-Free Portal</p>
+        </div>
+      </div>
+
+      <nav class="nav-tabs" role="tablist">
+        <button class="nav-tab active" data-tab="schedule" role="tab">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          Doctor's Day
+        </button>
+        <button class="nav-tab" data-tab="search" role="tab">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          Patient Lookup
+        </button>
+        <button class="nav-tab" data-tab="ledger" role="tab">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          Cancellation Ledger
+        </button>
+      </nav>
+
+      <div class="nav-actions">
+        <button class="btn btn-primary" id="btnOpenBookModal">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Book Appointment
+        </button>
+      </div>
+    </header>
+
+    <main class="content-container">
+      <!-- TAB 1: DOCTOR SCHEDULE -->
+      <section id="tab-schedule" class="tab-pane active">
+        <!-- Control bar: Doctor selector & date picker -->
+        <div class="filter-card">
+          <div class="filter-group">
+            <label for="doctorSelect">Attending Doctor:</label>
+            <select id="doctorSelect" class="form-select"></select>
+          </div>
+
+          <div class="filter-group date-stepper">
+            <label for="scheduleDate">Date:</label>
+            <div class="date-controls">
+              <button class="btn btn-secondary btn-icon" id="btnPrevDay" title="Previous Day">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+              <input type="date" id="scheduleDate" class="form-input">
+              <button class="btn btn-secondary btn-icon" id="btnNextDay" title="Next Day">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+              <button class="btn btn-secondary" id="btnToday">Today</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Doctor Summary & Metrics -->
+        <div id="doctorMetrics" class="doctor-metrics-card">
+          <!-- Populated by JS -->
+        </div>
+
+        <!-- Schedule Timeline View -->
+        <div class="timeline-wrapper">
+          <div class="timeline-header">
+            <h3>Daily Schedule Timeline</h3>
+            <span class="badge badge-info" id="activeApptCount">0 appointments</span>
+          </div>
+
+          <div id="timelineContainer" class="timeline-list">
+            <div class="loading-spinner">Loading schedule...</div>
+          </div>
+
+          <!-- Cancelled appointments on this date -->
+          <div id="cancelledSection" class="cancelled-section" style="display: none;">
+            <h4>Cancelled Appointments on This Day</h4>
+            <div id="cancelledList" class="cancelled-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: PATIENT SEARCH -->
+      <section id="tab-search" class="tab-pane">
+        <div class="search-header-card">
+          <div class="search-input-wrapper">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="patientSearchInput" class="search-input" placeholder="Search patient by name (e.g. Alice, Johnson, Brown)..." autofocus>
+            <button class="btn btn-secondary" id="btnClearSearch">Clear</button>
+          </div>
+          <p class="search-hint">Instant lookup across active bookings, historical visits, and fee records.</p>
+        </div>
+
+        <div id="searchResultsContainer" class="search-results-list">
+          <div class="empty-state">
+            <p>Type a patient's name above to view their upcoming and past appointments.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: CANCELLATION LEDGER -->
+      <section id="tab-ledger" class="tab-pane">
+        <div class="ledger-metrics-grid" id="ledgerKpis">
+          <!-- Populated by JS -->
+        </div>
+
+        <div class="table-card">
+          <div class="table-card-header">
+            <h3>Cancellation Audit Log</h3>
+            <button class="btn btn-secondary btn-sm" id="btnRefreshLedger">Refresh</button>
+          </div>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Date & Time</th>
+                  <th>Patient</th>
+                  <th>Doctor</th>
+                  <th>Notice Given</th>
+                  <th>Policy Classification</th>
+                  <th>Fee Assessed</th>
+                  <th>Reason / Waiver Notes</th>
+                </tr>
+              </thead>
+              <tbody id="ledgerTableBody">
+                <tr><td colspan="7" class="text-center">Loading audit records...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- BOOKING MODAL -->
+  <div class="modal-backdrop" id="bookModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Book New Appointment</h3>
+        <button class="modal-close" id="btnCloseBookModal">&times;</button>
+      </div>
+      <form id="bookForm">
+        <div class="modal-body">
+          <div id="bookingConflictAlert" class="alert alert-danger" style="display: none;">
+            <strong id="conflictTitle">Conflict Detected!</strong>
+            <p id="conflictMessage"></p>
+            <div id="conflictSuggestions" class="conflict-suggestions"></div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="bookDoctor">Doctor *</label>
+              <select id="bookDoctor" class="form-select" required></select>
+            </div>
+            <div class="form-group">
+              <label for="bookDuration">Duration *</label>
+              <select id="bookDuration" class="form-select" required>
+                <option value="15">15 minutes (Quick follow-up)</option>
+                <option value="30" selected>30 minutes (Standard visit)</option>
+                <option value="45">45 minutes (Comprehensive exam)</option>
+                <option value="60">60 minutes (Specialist consult)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="bookDate">Date *</label>
+              <input type="date" id="bookDate" class="form-input" required>
+            </div>
+            <div class="form-group">
+              <label for="bookTime">Start Time *</label>
+              <input type="time" id="bookTime" class="form-input" required step="300">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="bookPatientName">Patient Full Name *</label>
+              <input type="text" id="bookPatientName" class="form-input" placeholder="e.g. Jane Doe" required>
+            </div>
+            <div class="form-group">
+              <label for="bookPatientPhone">Phone Number</label>
+              <input type="tel" id="bookPatientPhone" class="form-input" placeholder="e.g. 555-0199">
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="bookNotes">Reason for Visit / Clinical Notes</label>
+            <textarea id="bookNotes" class="form-textarea" rows="2" placeholder="e.g. Follow-up consultation, fever, blood pressure check..."></textarea>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btnCancelBookModal">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="btnSubmitBook">Confirm Booking</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- CANCELLATION MODAL -->
+  <div class="modal-backdrop" id="cancelModal" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Cancel Appointment</h3>
+        <button class="modal-close" id="btnCloseCancelModal">&times;</button>
+      </div>
+      <form id="cancelForm">
+        <input type="hidden" id="cancelApptId">
+        <div class="modal-body">
+          <div class="appt-preview-summary" id="cancelApptSummary">
+            <!-- Populated dynamically -->
+          </div>
+
+          <div id="cancelNoticeBanner" class="alert">
+            <!-- Shows Free or Late fee status -->
+          </div>
+
+          <div class="form-group">
+            <label for="cancelReason">Reason for Cancellation *</label>
+            <input type="text" id="cancelReason" class="form-input" placeholder="e.g. Rescheduled by patient, personal emergency, symptoms resolved..." required>
+          </div>
+
+          <div class="waiver-box" id="waiverBox" style="display: none;">
+            <div class="form-checkbox">
+              <input type="checkbox" id="cancelWaiveFee">
+              <label for="cancelWaiveFee"><strong>Emergency Override: Waive late fee</strong></label>
+            </div>
+            <div class="form-group" id="waiverReasonGroup" style="display: none; margin-top: 8px;">
+              <label for="cancelWaiverReason">Supervisor Justification for Fee Waiver *</label>
+              <input type="text" id="cancelWaiverReason" class="form-input" placeholder="e.g. Medical emergency or hospital admission">
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btnDismissCancelModal">Keep Appointment</button>
+          <button type="submit" class="btn btn-danger" id="btnConfirmCancel">Confirm Cancellation</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- TOAST NOTIFICATIONS -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
+
